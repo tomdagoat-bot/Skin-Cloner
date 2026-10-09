@@ -1,0 +1,477 @@
+const Players = game:GetService("Players")
+const AssetService = game:GetService("AssetService")
+
+const LocalPlayer = Players.LocalPlayer
+
+if not identifyexecutor then
+	identifyexecutor = function()
+		return "Your Executor"
+	end
+end
+
+if not game.GetObjects then
+	LocalPlayer:Kick(`sorry, {identifyexecutor()} doesnt support this script`)
+end
+
+const Body_Part = Enum.BodyPart
+
+const Tables = {
+	Appearance = {"Accessory", "Shirt", "Pants", "ShirtGraphic", "BodyColors", "CharacterMesh"},
+	Limbs = {"Head","Torso","Left Arm","Right Arm","Left Leg","Right Leg"},
+	R15_Limbs = {
+		"LeftFoot","LeftHand","LeftLowerArm","LeftLowerLeg","LeftUpperArm","LeftUpperLeg",
+		"RightFoot","RightHand","RightLowerArm","RightLowerLeg","RightUpperArm","RightUpperLeg",
+		"UpperTorso","LowerTorso",
+		"Head"
+	},
+	Desc_Limbs = {"Head","Torso","LeftArm","RightArm","LeftLeg","RightLeg"},
+	Cloth = {"Shirt","Pants","GraphicTShirt"},
+	Mesh_Limbs = {
+		[0] = Body_Part.Head,
+		[1] = Body_Part.Torso,
+		[2] = Body_Part.LeftArm,
+		[3] = Body_Part.RightArm,
+		[4] = Body_Part.LeftLeg,
+		[5] = Body_Part.RightLeg
+	},
+	Connections = {},
+}
+
+const function Decode_File(Data) -- wtf
+	
+	const function Find_Property(Name, PropertyType)
+		const Position =  Data:find(Name, Data:find("CharacterMesh", 1, true), true) + #Name
+
+		assert(string.byte(Data, Position) == PropertyType,`Unexpected Encoding For {Name}`)
+
+		return Position
+	end
+
+	const function ReadUInt32BE(Position)
+		const A, B, C, D = string.byte(Data,Position,Position + 3)
+
+		assert(D, "Unexpected End Of File")
+
+		return ((A * 256 + B) * 256 + C) * 256 + D
+	end
+
+	const function ReadContentId(Name)
+		return math.floor(ReadUInt32BE(Find_Property(Name, 0x1B) + 5) / 2)
+	end
+
+	const BodyPart_Value = ReadUInt32BE(Find_Property("BodyPart", 0x12) + 1)
+
+	local MeshId = ReadContentId("MeshId")
+	local BaseTextureId = ReadContentId("BaseTextureId")
+	local OverlayTextureId = ReadContentId("OverlayTextureId")
+
+	assert(Tables.Mesh_Limbs[BodyPart_Value], "Unknown BodyPart Enum Value")
+	assert(MeshId > 0, "Invalid Mesh ID")
+
+	return {
+		MeshId = MeshId,
+		BaseTextureId = BaseTextureId,
+		OverlayTextureId = OverlayTextureId,
+		BodyPart = Tables.Mesh_Limbs[BodyPart_Value],
+	}
+end
+
+const R15 = Enum.HumanoidRigType.R15
+
+const function IsA(Object,Type) : boolean
+	return typeof(Object) == Type
+end
+
+const function ID(Id)
+	return IsA(Id,"number") and `rbxassetid://{tostring(Id)}` or Id
+end
+
+const function Load(AssetID)
+	if not AssetID or AssetID == 0 then
+		return
+	end
+
+	const Objects = game:GetObjects(ID(AssetID))
+
+	if not Objects or #Objects < 1 then
+		warn(`Failed To Load Object: {AssetID}`)
+		return
+	end
+
+	return Objects[1]
+end
+
+const function Clear_Look(Character,Is_R15)
+	for _, Obj in pairs(Character:GetChildren()) do
+		if 	table.find(Tables.Appearance,Obj.ClassName) then
+			Obj:Destroy()
+		end
+	end
+
+	for _, Limb in pairs(Is_R15 and Tables.R15_Limbs or Tables.Limbs) do
+		local Limb = Character:FindFirstChild(Limb)
+
+		if Limb then
+			const Conn = Tables.Connections[`{Character.Name}_{Limb}`]
+
+			if Conn then
+				Conn:Disconnect()
+				Tables.Connections[`{Character.Name}_{Limb}`] = nil
+			end
+			
+			Limb.Transparency = 0
+		end
+	end
+
+	const Head : Part = Character:FindFirstChild("Head")
+
+	if Head then
+		const face = Head:FindFirstChildOfClass("Decal")
+
+		if face then
+			face:Destroy()
+		end
+	end
+end
+
+--[[ Incase Of Using A Custom Avatar ]]--
+
+const function BC(Info,Character)
+	const BodyColors = IsA(Info.BodyColors,"Instance") and Info.BodyColors:Clone() or Instance.new("BodyColors")
+
+	if not IsA(Info.BodyColors,"Instance") then
+		for _, Limb in pairs(Tables.Desc_Limbs) do
+			const Color = Info.BodyColors[Limb]
+
+			if Color then
+				BodyColors[`{Limb}Color3`] = Color
+			end
+		end
+	end
+
+	BodyColors.Parent = Character
+end
+
+const function C(Info,Character)
+	for Clothing, AssetID in pairs(Info.Cloth) do
+		if not AssetID or AssetID == 0 then
+			continue
+		end
+
+		const Obj = Load(AssetID)
+
+		if Obj then
+			Obj.Name = Clothing
+			Obj.Parent = Character
+		end
+	end
+end
+
+const function Clear_Mesh(Character)
+	for _, Obj in pairs(Character:GetChildren()) do
+		if Obj:IsA("CharacterMesh") then
+			Obj:Destroy()
+		end
+	end
+end
+
+const function M(Info,Character,Is_R15) -- making ts was the hardest thing ever
+	Info.Bundle.ID = tonumber(
+		tostring(Info.Bundle.ID):match("bundles/(%d+)")
+	) or tonumber(Info.Bundle.ID)
+	
+	const Bundle_Into = AssetService:GetBundleDetailsAsync(Info.Bundle.ID)
+	const Bundle_Name = Bundle_Into.Name
+	
+	for _, Limb_Name in ipairs(Info.Bundle.Limbs) do	
+		local AssetID 
+		
+		for _, Asset in ipairs(Bundle_Into.Items) do
+			if Asset.Name:lower():find(Limb_Name:lower()) then
+				AssetID = Asset.Id
+				break
+			end
+		end
+		
+		if AssetID then
+			if not Is_R15 then
+				const Success, Contents = pcall(function()
+					return Decode_File(game:HttpGet(`https://assetdelivery.roblox.com/v1/asset/?id={AssetID}`))
+				end)
+				
+				if not Success then
+					warn(`Failed To Load Bundle Limb: {Limb_Name}, ID: {AssetID}`)
+					continue
+				end
+				
+				const Mesh = Instance.new("CharacterMesh")
+				
+				for index, value in Contents do
+					Mesh[index] = value
+				end
+				
+				Mesh.Parent = Character
+			else
+				const ArtistIntent = Load(AssetID)
+				
+				if not ArtistIntent then
+					warn(`Failed To Load Bundle Limb: {Limb_Name}, ID: {AssetID}`)
+					continue
+				end
+				
+				for _, Part in pairs(ArtistIntent:GetChildren()) do
+					const Limb = Character:FindFirstChild(Part.Name)
+					
+					if Limb and Part:IsA("MeshPart") and Limb:IsA("MeshPart") then
+						Limb.Size = Part.Size
+						Limb.MeshId = Part.MeshId
+						Limb.TextureID = Part.TextureID
+						Limb.Transparency = Part.Transparency
+					end
+				end
+			end
+		end
+	end
+end
+const function ACC(Info,Character)
+	for _, AssetID in pairs(Info.Accessories) do
+		if AssetID and AssetID ~= 0 then
+			const Accessory = Load(AssetID)
+
+			Accessory_Fix(Accessory,Character)
+		end
+	end
+end
+
+const function H(Info,Character)
+	for _, Limb in pairs(Info.Hide) do
+		const Part = Character:FindFirstChild(Limb)
+
+		if Part then
+			Part.Transparency = 1
+			
+			const Conn = Tables.Connections[`{Character.Name}_{Limb}`]
+
+			if Conn then
+				Conn:Disconnect()
+			end
+
+			Tables.Connections[`{Character.Name}_{Limb}`] = Part:GetPropertyChangedSignal("Transparency"):Connect(function()
+				if Part.Transparency >= 1 then return end
+				Part.Transparency = 1
+			end)
+		end
+	end
+end
+
+--[[ Rest Of Script ]]--
+
+function Accessory_Fix(Accessory,Character)
+	if not Accessory then
+		warn("An Unknown Invalid Accessory Was Attempted To Get Fixed")
+		return
+	end
+
+	if not Accessory:IsA("Accessory") then
+		Accessory.Parent = Character
+		return
+	end
+
+	const Old = Accessory 
+
+	Accessory = Old:Clone()
+	Old:Destroy()
+
+	const Handle = Accessory:FindFirstChild("Handle")
+
+	if not Handle or not Handle:IsA("BasePart") then
+		Accessory:Destroy()
+		return
+	end
+
+	const Rigid = Handle:FindFirstChildOfClass("RigidConstraint")
+
+	if Rigid then
+		Rigid:Destroy()
+	end
+
+	Handle.CanCollide = false
+	Handle.Massless = true
+
+	const Acc_Attachment = Handle:FindFirstChildOfClass("Attachment")
+
+	if not Acc_Attachment then
+		Accessory:Destroy()
+		return
+	end
+
+	const Char_Attachment = Character:FindFirstChild(Acc_Attachment.Name,true)
+
+	if not Char_Attachment or not Char_Attachment:IsA("Attachment") then
+		Accessory:Destroy()
+		return
+	end
+
+	Accessory.Parent = Character
+
+	Handle.CFrame = Char_Attachment.WorldCFrame * Acc_Attachment.CFrame:Inverse()
+
+	const Weld = Instance.new("Weld")
+
+	Weld.Name = "AccessoryWeld"
+	Weld.Part0 = Char_Attachment.Parent
+	Weld.Part1 = Handle
+	Weld.C0 = Char_Attachment.CFrame
+	Weld.C1 = Acc_Attachment.CFrame
+	Weld.Parent = Handle
+end
+
+function Clone_Skin(Skin,Character,Is_R15)
+	Skin = Skin:Clone()
+	
+	for _, Obj in pairs(Skin:GetDescendants()) do
+		if Obj.Name == "HumanoidRootPart" then continue end
+
+		if table.find(Tables.Appearance,Obj.ClassName) then
+			Accessory_Fix(Obj,Character)
+		elseif Obj:IsA("MeshPart") and Is_R15 then
+			const Limb = Character:FindFirstChild(Obj.Name)
+
+			if Limb and Limb:IsA("MeshPart") then
+				Limb.Size = Obj.Size
+				Limb.MeshId = Obj.MeshId
+				Limb.TextureID = Obj.TextureID
+				Limb.Transparency = Obj.Transparency
+			end
+		end
+	end
+
+	const Avatar_Head = Skin:FindFirstChild("Head")
+
+	if not Avatar_Head then
+		Skin:Destroy()
+		return
+	end
+
+	const face = Avatar_Head:FindFirstChild("face")
+	const Mesh_face = Avatar_Head:FindFirstChildOfClass("SpecialMesh")
+
+	const Head = Character:FindFirstChild("Head")
+	
+	if Head then
+		if face then
+			face.Parent = Head
+		end
+		
+		if Mesh_face then
+			const Old_ = Head:FindFirstChildOfClass("SpecialMesh")
+			
+			if Old_ then
+				Old_:Destroy()
+			end
+			
+			Mesh_face.Parent = Head
+		end
+	end
+
+	Skin:Destroy()
+end
+
+const function Clone_Player(UserID,Character,RigType)
+	const Avatar = Players:CreateHumanoidModelFromUserIdAsync(UserID,RigType)
+
+	if not Avatar then
+		error(`Roblox Failed To Load The Avatar Of UserID: {UserID}\nMake Sure This User Exists`)
+	end
+	
+	Clone_Skin(Avatar,Character,RigType == R15)
+	
+	Avatar:Destroy()
+end
+
+export type Skin_Info = number | Model | {[string] : boolean | number | string | {Color3 | number | string}}
+
+const function Limbs_Array(Array,Is_R15)
+	const Full = Is_R15 and Tables.R15_Limbs or Tables.Limbs
+
+	if not Array then return end
+
+	if Array == "All" then return table.clone(Full) end
+
+	const Result = table.clone(Array)
+
+	if table.find(Result,"Exclude") then
+		const Excluded = table.clone(Result)
+		table.clear(Result)
+
+		for _, Limb in ipairs(Full) do
+			if not table.find(Excluded, Limb) then
+				table.insert(Result, Limb)
+			end
+		end
+	end
+
+	return Result
+end
+
+function Main(Character,Info : Skin_Info)
+	if not Character then
+		Character = LocalPlayer.Character
+	end
+	
+	const RigType = Character:FindFirstChildOfClass("Humanoid").RigType
+	
+	const Is_Custom = IsA(Info,"table")
+	const Is_R15 = RigType == R15 
+	
+	if IsA(Info,"number") then
+		Info = {UserId = Info,Keep = false}
+	elseif IsA(Info,"Instance") then
+		if not Info:IsA("Model") then return end
+		
+		Info = {Skin = Info,Keep = false}
+	end
+	
+	if Info.Skin and Info.UserId then
+		error("use either a userid or a model you idiot",2)
+	end
+	
+	if not Info.Keep then
+		Clear_Look(Character,Is_R15)
+	end
+	
+	if Info.UserId then
+		Clone_Player(Info.UserId,Character,RigType)
+	elseif Info.Skin then
+		Clone_Skin(Info.Skin, Character, Is_R15)
+	end
+
+	if Is_Custom then
+		if Info.Accessories then
+			ACC(Info,Character)
+		end
+		
+		if Info.Cloth then
+			C(Info,Character)
+		end
+		
+		if Info.Hide then
+			Info.Hide = Limbs_Array(Info.Hide,Is_R15)
+			H(Info, Character)
+		end
+
+		if Info.Bundle then
+			if not Info.Keep then
+        Clear_Mesh(Character)
+      end
+			Info.Bundle.Limbs = Limbs_Array(Info.Bundle.Limbs,Is_R15)
+			M(Info, Character, Is_R15)
+		end
+		
+		if Info.BodyColors then
+			BC(Info,Character)
+		end
+	end
+end
+
+return Main
